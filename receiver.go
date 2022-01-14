@@ -32,7 +32,7 @@ func main() {
 
 	defer con.Close()
 
-	buffer := make([]byte, 3000)
+	buffer := make([]byte, 4096)
 	lastPackTime := time.Now()
 	lastPackNum := 0
 	lostPackages := 0
@@ -41,24 +41,24 @@ func main() {
 	var transferedTime time.Duration
 	latencySum := float64(0)
 	transfaredPackages := 0
-	var data message
+	data := new(message)
 	for {
 		n, _, _ := con.ReadFromUDP(buffer)
 		transferedTime += time.Since(lastPackTime)
 		transferedData += 8 * n
 		transfaredPackages += 1
 		if mode == "complete" {
-			data := new(message)
 			json.Unmarshal(buffer[:n], data)
 			if (data.SeqNum - lastPackNum) > 1 {
 				lostPackages += data.SeqNum - lastPackNum - 1
 			}
 			latencySum += time.Since(data.Time).Seconds()
+			lastPackNum = data.SeqNum
 		}
 		if time.Since(lastTime).Seconds() > 1 {
 
 			if mode == "complete" {
-				complexOutput(transfaredPackages, transferedData, transferedTime, data, latencySum, lostPackages)
+				complexOutput(transfaredPackages, transferedData, transferedTime, data.SeqNum, latencySum, lostPackages)
 			} else {
 				simpleOutput(transfaredPackages, transferedData, transferedTime)
 			}
@@ -80,9 +80,9 @@ func simpleOutput(transferedPackages int, transferedData int, transferedTime tim
 	fmt.Print("\033[A")
 }
 
-func complexOutput(transferedPackages int, transferedData int, transferedTime time.Duration, data message, latencySum float64, lostPackages int) {
+func complexOutput(transferedPackages int, transferedData int, transferedTime time.Duration, seqNumber int, latencySum float64, lostPackages int) {
 	fmt.Printf("Package count: %d /s\n", transferedPackages)
-	fmt.Printf("Number: %d \n", data.SeqNum)
+	fmt.Printf("Number: %d \n", seqNumber)
 	fmt.Printf("Datarate : %f Mbit/s\n", float64(transferedData)/transferedTime.Seconds()/1024/1024)
 	fmt.Printf("Latency: %f \n", latencySum/float64(transferedPackages))
 	fmt.Printf("Lost packages: %d \n", lostPackages)

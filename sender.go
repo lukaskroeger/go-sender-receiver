@@ -32,9 +32,16 @@ func main() {
 	for {
 		data, _ := json.Marshal(message{seqNumber, time.Now()})
 		con.Write(data)
+		for !isAcknowledged(seqNumber) {
+			con.Write(data)
+		}
 		seqNumber += 1
 	}
 
+}
+
+func isAcknowledged(seqNumber int) bool {
+	return true
 }
 
 func checkError(err error) {
