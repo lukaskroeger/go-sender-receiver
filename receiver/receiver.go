@@ -6,19 +6,26 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/bits-and-blooms/bloom"
 )
 
 type message struct {
+	//header Data
 	SlidingWindow int
-	SeqNum        int
+	ListIndex     int
 	Time          time.Time
-}
-type ack struct {
-	SlidingWindow int
-	IsNak         bool
+	//payload data
+	SeqNum  int
+	Payload []byte
 }
 
-const slidingWindowSize = 10000
+type ack struct {
+	SlidingWindow int
+	Bloom         []byte
+}
+
+const slidingWindowSize = 1000
 
 var lastTime time.Time
 var transferedData int
@@ -48,6 +55,8 @@ func main() {
 
 	conRec, err := net.ListenUDP("udp4", addr)
 	checkError(err)
+	err = conRec.SetReadBuffer(100000 * 1024)
+	checkError(err)
 	defer conRec.Close()
 
 	lastTime = time.Now()
@@ -64,30 +73,28 @@ func main() {
 	tempRetransmitts = 0
 
 	for {
+		//fmt.Println("waiting")
 		n, conSendAddr, _ := conRec.ReadFromUDP(buffer)
+		//fmt.Println(string(buffer), n)
 		transferedTime += time.Since(lastPackTime)
 		transferedData += 8 * n
 		transfaredPackages += 1
 		if mode == "complete" {
 			json.Unmarshal(buffer[:n], data)
-			if removeFromOrderedIfThere(data.SlidingWindow, missingPackages) {
-				sendAcknowledgement(conSendAddr, data.SlidingWindow)
-				tempRetransmitts += 1
-			} else {
-				diff := (data.SlidingWindow - lastPackNum) % slidingWindowSize
-				if diff > 1 {
-					lostPackages += diff
-					sendNotAck(conSendAddr, lastPackNum+1, diff)
-					for n := lastPackNum + 1; n < lastPackNum+diff; n++ {
-						missingPackages = append(missingPackages, n%slidingWindowSize)
-					}
-				} else {
-					sendAcknowledgement(conSendAddr, data.SlidingWindow)
+			diff := data.ListIndex - lastPackNum
+			if diff > 1 {
+				lostPackages += diff - 1
+				for n := lastPackNum + 1; n < lastPackNum+diff; n++ {
+					missingPackages = append(missingPackages, n)
 				}
 			}
-			latencySum += time.Since(data.Time).Seconds()
-			lastPackNum = data.SlidingWindow
 
+			if data.ListIndex+1 == slidingWindowSize {
+				//fmt.Println(missingPackages)
+				sendNacks(conSendAddr, data.SlidingWindow)
+			}
+			latencySum += time.Since(data.Time).Seconds()
+			lastPackNum = data.ListIndex
 		}
 		output(data)
 		lastPackTime = time.Now()
@@ -95,36 +102,25 @@ func main() {
 
 }
 
-func sendAcknowledgement(addr *net.UDPAddr, seqNumber int) {
+func sendNacks(addr *net.UDPAddr, slidingWindow int) {
+	//fmt.Println("nack send")
+	bloomFilter := bloom.New(slidingWindowSize, 5)
+	for _, pack := range missingPackages {
+		bloomFilter.Add([]byte(fmt.Sprint(pack)))
+	}
 	addrSend, err := net.ResolveUDPAddr("udp4", addr.IP.String()+":4445")
 	checkError(err)
 
 	con, err := net.DialUDP("udp4", nil, addrSend)
 	checkError(err)
 	defer con.Close()
+	bloom, _ := bloomFilter.MarshalJSON()
+	ackPackage := ack{SlidingWindow: slidingWindow, Bloom: bloom}
 
-	ackPackage := ack{IsNak: false}
-	if len(missingPackages) > 0 {
-		ackPackage.SlidingWindow = (missingPackages[0] - 1) % slidingWindowSize
-	} else {
-		ackPackage.SlidingWindow = seqNumber
-	}
 	data, _ := json.Marshal(ackPackage)
 	con.Write(data)
-}
-
-func sendNotAck(addr *net.UDPAddr, from int, count int) {
-	addrSend, err := net.ResolveUDPAddr("udp4", addr.IP.String()+":4445")
-	checkError(err)
-
-	con, err := net.DialUDP("udp4", nil, addrSend)
-	checkError(err)
-	defer con.Close()
-	for num := from; num <= from+count; num++ {
-		data, err := json.Marshal(ack{num % slidingWindowSize, true})
-		checkError(err)
-		con.Write(data)
-	}
+	missingPackages = missingPackages[:0]
+	//fmt.Println("nack sent")
 }
 
 func output(data *message) {
